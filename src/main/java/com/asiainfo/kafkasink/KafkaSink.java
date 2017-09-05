@@ -1,224 +1,484 @@
 /**
- * Licensed to the Apache Software Foundation (ASF) under one or more
- * contributor license agreements.  See the NOTICE file distributed with
- * this work for additional information regarding copyright ownership.
- * The ASF licenses this file to You under the Apache License, Version 2.0
- * (the "License"); you may not use this file except in compliance with
- * the License.  You may obtain a copy of the License at
- * <p>
- * http://www.apache.org/licenses/LICENSE-2.0
- * <p>
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- * limitations under the License.
+ Licensed to the Apache Software Foundation (ASF) under one or more
+ contributor license agreements.  See the NOTICE file distributed with
+ this work for additional information regarding copyright ownership.
+ The ASF licenses this file to You under the Apache License, Version 2.0
+ (the "License"); you may not use this file except in compliance with
+ the License.  You may obtain a copy of the License at
+
+ http://www.apache.org/licenses/LICENSE-2.0
+
+ Unless required by applicable law or agreed to in writing, software
+ distributed under the License is distributed on an "AS IS" BASIS,
+ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ See the License for the specific language governing permissions and
+ limitations under the License.
+ limitations under the License.
  */
 
 package com.asiainfo.kafkasink;
 
-import kafka.javaapi.producer.Producer;
-import kafka.producer.KeyedMessage;
-import kafka.producer.ProducerConfig;
-import org.apache.commons.lang.StringUtils;
+import com.google.common.base.Optional;
+import com.google.common.base.Throwables;
+import org.apache.avro.io.BinaryEncoder;
+import org.apache.avro.io.EncoderFactory;
+import org.apache.avro.specific.SpecificDatumReader;
+import org.apache.avro.specific.SpecificDatumWriter;
 import org.apache.flume.*;
 import org.apache.flume.conf.Configurable;
-import org.apache.flume.instrumentation.SinkCounter;
+import org.apache.flume.conf.ConfigurationException;
+import org.apache.flume.conf.LogPrivacyUtil;
+import org.apache.flume.instrumentation.kafka.KafkaSinkCounter;
 import org.apache.flume.sink.AbstractSink;
+import org.apache.flume.source.avro.AvroFlumeEvent;
+import org.apache.kafka.clients.producer.*;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Map;
-import java.util.Properties;
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+import java.nio.ByteBuffer;
+import java.util.*;
+import java.util.concurrent.Future;
+
+import static com.asiainfo.kafkasink.KafkaSinkConstants.*;
+
 
 /**
  * A Flume Sink that can publish messages to Kafka.
- * This is a general implementation that can be used with any Flume agent and a channel.
- * This supports key and messages of type String.
- * Extension points are provided to for users to implement custom key and topic extraction
- * logic based on the message content as well as the Flume context.
- * Without implementing this extension point(MessagePreprocessor), it's possible to publish
- * messages based on a static topic. In this case messages will be published to a random
- * partition.
+ * This is a general implementation that can be used with any Flume agent and
+ * a channel.
+ * The message can be any event and the key is a string that we read from the
+ * header
+ * For use of partitioning, use an interceptor to generate a header with the
+ * partition key
+ * <p/>
+ * Mandatory properties are:
+ * brokerList -- can be a partial list, but at least 2 are recommended for HA
+ * <p/>
+ * <p/>
+ * however, any property starting with "kafka." will be passed along to the
+ * Kafka producer
+ * Read the Kafka producer documentation to see which configurations can be used
+ * <p/>
+ * Optional properties
+ * topic - there's a default, and also - this can be in the event header if
+ * you need to support events with
+ * different topics
+ * batchSize - how many messages to process in one batch. Larger batches
+ * improve throughput while adding latency.
+ * requiredAcks -- 0 (unsafe), 1 (accepted by at least one broker, default),
+ * -1 (accepted by all brokers)
+ * useFlumeEventFormat - preserves event headers when serializing onto Kafka
+ * <p/>
+ * header properties (per event):
+ * topic
+ * key
  */
 public class KafkaSink extends AbstractSink implements Configurable {
 
-    private static final Logger logger = LoggerFactory.getLogger(KafkaSink.class);
-    private Properties producerProps;
-    private Producer<String, String> producer;
-    private MessagePreprocessor messagePreProcessor;
-    private String topic;
-    private Context context;
-    private int batchSize;
-    private List<KeyedMessage<String, String>> messageList;
-    private SinkCounter sinkCounter;
+  private static final Logger logger = LoggerFactory.getLogger(KafkaSink.class);
+
+  private final Properties kafkaProps = new Properties();
+  private KafkaProducer<String, byte[]> producer;
+
+  private String topic;
+  private int batchSize;
+  private List<Future<RecordMetadata>> kafkaFutures;
+  private KafkaSinkCounter counter;
+  private boolean useAvroEventFormat;
+  private String partitionHeader = null;
+  private Integer staticPartitionId = null;
+  private Optional<SpecificDatumWriter<AvroFlumeEvent>> writer =
+          Optional.absent();
+  private Optional<SpecificDatumReader<AvroFlumeEvent>> reader =
+          Optional.absent();
+  private Optional<ByteArrayOutputStream> tempOutStream = Optional
+          .absent();
+
+  //Fine to use null for initial value, Avro will create new ones if this
+  // is null
+  private BinaryEncoder encoder = null;
+
+  private MessagePreprocessor messagePreProcessor;
 
 
-    @Override
-    public Status process() throws EventDeliveryException {
-        Status result = Status.READY;
-        Channel channel = getChannel();
-        Transaction transaction = null;
-        Event event = null;
-        String eventKey = null;
-        KeyedMessage<String, String> data;
+  //For testing
+  public String getTopic() {
+    return topic;
+  }
+
+  public int getBatchSize() {
+    return batchSize;
+  }
+
+  @Override
+  public Status process() throws EventDeliveryException {
+    Status result = Status.READY;
+    Channel channel = getChannel();
+    Transaction transaction = null;
+    Event event = null;
+    String eventTopic = null;
+    String eventKey = null;
+
+    try {
+      long processedEvents = 0;
+
+      transaction = channel.getTransaction();
+      transaction.begin();
+
+      kafkaFutures.clear();
+      long batchStartTime = System.nanoTime();
+      for (; processedEvents < batchSize; processedEvents += 1) {
+        event = channel.take();
+
+        if (event == null) {
+          // no events available in channel
+          if (processedEvents == 0) {
+            result = Status.BACKOFF;
+            counter.incrementBatchEmptyCount();
+          } else {
+            counter.incrementBatchUnderflowCount();
+          }
+          break;
+        }
+
+        byte[] eventBody = event.getBody();
+        Map<String, String> headers = event.getHeaders();
+
+        eventTopic = headers.get(TOPIC_HEADER);
+        if (eventTopic == null) {
+          eventTopic = topic;
+        }
+        eventKey = headers.get(KEY_HEADER);
+        if (logger.isTraceEnabled()) {
+          if (LogPrivacyUtil.allowLogRawData()) {
+            logger.trace("{Event} " + eventTopic + " : " + eventKey + " : "
+                + new String(eventBody, "UTF-8"));
+          } else {
+            logger.trace("{Event} " + eventTopic + " : " + eventKey);
+          }
+        }
+        logger.debug("event #{}", processedEvents);
+
+        // create a message and add to buffer
+        long startTime = System.currentTimeMillis();
+
+        Integer partitionId = null;
         try {
-            long processedEvent = 0;
-            transaction = channel.getTransaction();
-            transaction.begin();// 事务开始
-             messageList.clear();
-
-            for (; processedEvent < batchSize; processedEvent++) {
-                event = channel.take();// 从channel取出一个事件
-                if (event == null) {
-                    result = Status.BACKOFF;
-                    break;
-                }
-                sinkCounter.incrementEventDrainAttemptCount();
-                String eventBody = new String(event.getBody());
-                // if the metadata extractor is set, extract the topic and the key.
-                if (messagePreProcessor != null) {
-                    eventBody = messagePreProcessor.transformMessage(eventBody);
-                    eventKey = messagePreProcessor.extractKey(event, context);
-                }
-                // log the event for debugging
-                if (logger.isDebugEnabled()) {
-                    logger.debug("{Event} " + eventBody);
-                }
-                if(StringUtils.isEmpty(eventKey)){
-                    data = new KeyedMessage<String, String>(topic,eventBody);
-                }else{
-                    data = new KeyedMessage<String, String>(topic, eventKey,eventBody);
-                }
-
-                // publish
-                messageList.add(data);
-                logger.debug("Add data [" + eventBody
-                        + "] into messageList,position:" + processedEvent);
+          ProducerRecord<String, byte[]> record;
+          if (staticPartitionId != null) {
+            partitionId = staticPartitionId;
+          }
+          //Allow a specified header to override a static ID
+          if (partitionHeader != null) {
+            String headerVal = event.getHeaders().get(partitionHeader);
+            if (headerVal != null) {
+              partitionId = Integer.parseInt(headerVal);
             }
+          }
 
-            if (processedEvent == 0) {
-                sinkCounter.incrementBatchEmptyCount();
-                result = Status.BACKOFF;
-            } else {
-                if (processedEvent < batchSize) {
-                    sinkCounter.incrementBatchUnderflowCount();
-                } else {
-                    sinkCounter.incrementBatchCompleteCount();
-                }
-                sinkCounter.addToEventDrainAttemptCount(processedEvent);
-                producer.send(messageList);
-                logger.info("Send MessageList to Kafka: [ message List size = "
-                        + messageList.size() + ",processedEvent number = "
-                        + processedEvent + "] ");
-            }
-            transaction.commit();//batchSize个事件处理完成，一次事务提交
-            sinkCounter.addToEventDrainSuccessCount(processedEvent);
-            result = Status.READY;
+
+          if (messagePreProcessor != null) {
+            eventBody = messagePreProcessor.transformMessage(new String(eventBody, "UTF-8")).getBytes();
+            event.setBody(eventBody);
+            //eventKey = messagePreProcessor.extractKey(event, context);
+          }
+
+
+          if (partitionId != null) {
+
+            record = new ProducerRecord<String, byte[]>(eventTopic, partitionId, eventKey,
+                serializeEvent(event, useAvroEventFormat));
+          } else {
+            record = new ProducerRecord<String, byte[]>(eventTopic, eventKey,
+                serializeEvent(event, useAvroEventFormat));
+          }
+          kafkaFutures.add(producer.send(record, new SinkCallback(startTime)));
+        } catch (NumberFormatException ex) {
+          throw new EventDeliveryException("Non integer partition id specified", ex);
         } catch (Exception ex) {
-            transaction.rollback();
-            String errorMsg = "Failed to publish event: " + event;
-            logger.error(errorMsg);
-            throw new EventDeliveryException(errorMsg, ex);
-        } finally {
-            transaction.close();
+          // N.B. The producer.send() method throws all sorts of RuntimeExceptions
+          // Catching Exception here to wrap them neatly in an EventDeliveryException
+          // which is what our consumers will expect
+          throw new EventDeliveryException("Could not send event", ex);
         }
-        return result;
+      }
+
+      //Prevent linger.ms from holding the batch
+      producer.flush();
+
+      // publish batch and commit.
+      if (processedEvents > 0) {
+        for (Future<RecordMetadata> future : kafkaFutures) {
+          future.get();
+        }
+        long endTime = System.nanoTime();
+        counter.addToKafkaEventSendTimer((endTime - batchStartTime) / (1000 * 1000));
+        counter.addToEventDrainSuccessCount(Long.valueOf(kafkaFutures.size()));
+      }
+
+      transaction.commit();
+
+    } catch (Exception ex) {
+      String errorMsg = "Failed to publish events";
+      logger.error("Failed to publish events", ex);
+      result = Status.BACKOFF;
+      if (transaction != null) {
+        try {
+          kafkaFutures.clear();
+          transaction.rollback();
+          counter.incrementRollbackCount();
+        } catch (Exception e) {
+          logger.error("Transaction rollback failed", e);
+          throw Throwables.propagate(e);
+        }
+      }
+      throw new EventDeliveryException(errorMsg, ex);
+    } finally {
+      if (transaction != null) {
+        transaction.close();
+      }
     }
 
-    @Override
-    public synchronized void start() {
-        // instantiate the producer
+    return result;
+  }
+
+  @Override
+  public synchronized void start() {
+    // instantiate the producer
+    producer = new KafkaProducer<String,byte[]>(kafkaProps);
+    counter.start();
+    super.start();
+  }
+
+  @Override
+  public synchronized void stop() {
+    producer.close();
+    counter.stop();
+    logger.info("Kafka Sink {} stopped. Metrics: {}", getName(), counter);
+    super.stop();
+  }
 
 
-        ProducerConfig config = new ProducerConfig(producerProps);
-        sinkCounter.start();
-        producer = new Producer<String, String>(config);
+  /**
+   * We configure the sink and generate properties for the Kafka Producer
+   *
+   * Kafka producer properties is generated as follows:
+   * 1. We generate a properties object with some static defaults that
+   * can be overridden by Sink configuration
+   * 2. We add the configuration users added for Kafka (parameters starting
+   * with .kafka. and must be valid Kafka Producer properties
+   * 3. We add the sink's documented parameters which can override other
+   * properties
+   *
+   * @param context
+   */
+  @Override
+  public void configure(Context context) {
 
-        //初始化topic
-        topic = StringUtils.defaultIfEmpty(producerProps
-                        .getProperty(com.asiainfo.kafkasink.Constants.CUSTOME_TOPIC_KEY_NAME),
-                com.asiainfo.kafkasink.Constants.DEFAULT_TOPIC_NAME);
+    translateOldProps(context);
 
-        super.start();
-        sinkCounter.incrementConnectionCreatedCount();
+    String topicStr = context.getString(TOPIC_CONFIG);
+    if (topicStr == null || topicStr.isEmpty()) {
+      topicStr = DEFAULT_TOPIC;
+      logger.warn("Topic was not specified. Using {} as the topic.", topicStr);
+    } else {
+      logger.info("Using the static topic {}. This may be overridden by event headers", topicStr);
     }
 
-    @Override
-    public synchronized void stop() {
-        producer.close();
-        sinkCounter.stop();
-        super.stop();
-        sinkCounter.incrementConnectionClosedCount();
+    topic = topicStr;
+
+    batchSize = context.getInteger(BATCH_SIZE, DEFAULT_BATCH_SIZE);
+
+    if (logger.isDebugEnabled()) {
+      logger.debug("Using batch size: {}", batchSize);
     }
 
+    useAvroEventFormat = context.getBoolean(KafkaSinkConstants.AVRO_EVENT,
+                                            KafkaSinkConstants.DEFAULT_AVRO_EVENT);
 
-    @Override
-    public void configure(Context context) {
-        this.context = context;
-        Map<String, String> params = context.getParameters();
-        producerProps = new Properties();
+    partitionHeader = context.getString(KafkaSinkConstants.PARTITION_HEADER_NAME);
+    staticPartitionId = context.getInteger(KafkaSinkConstants.STATIC_PARTITION_CONF);
 
-        batchSize = context.getInteger("batchSize",
-                com.asiainfo.kafkasink.Constants.DEFAULT_BATCH_SIZE);
-        logger.info("batchSize : " + batchSize);
-        messageList = new ArrayList<KeyedMessage<String, String>>(batchSize);
-
-        for (String key : params.keySet()) {
-            String value = params.get(key).trim();
-            key = key.trim();
-            producerProps.put(key, value);
-
-            if (logger.isDebugEnabled()) {
-                logger.debug("Reading a Kafka Producer Property: key: " + key + ", value: " + value);
-            }
-        }
-
-        if (sinkCounter == null) {
-            sinkCounter = new SinkCounter(getName());
-        }
-        // get the message Preprocessor if set
-        //通过反射将配置文件中配置的 YunNan2GMessagePreprocessor 实例化
-        String preprocessorClassName = context.getString(com.asiainfo.kafkasink.Constants.PREPROCESSOR);
-        if (preprocessorClassName != null) {
-            try {
-                Class preprocessorClazz = Class.forName(preprocessorClassName.trim());
-                Object preprocessorObj = preprocessorClazz.newInstance();
-                if (preprocessorObj instanceof MessagePreprocessor) {
-                    messagePreProcessor = (MessagePreprocessor) preprocessorObj;
-                } else {
-                    String errorMsg = "Provided class for MessagePreprocessor does not implement " +
-                            "'com.thilinamb.flume.sink.MessagePreprocessor'";
-                    logger.error(errorMsg);
-                    throw new IllegalArgumentException(errorMsg);
-                }
-            } catch (ClassNotFoundException e) {
-                String errorMsg = "Error instantiating the MessagePreprocessor implementation.";
-                logger.error(errorMsg, e);
-                throw new IllegalArgumentException(errorMsg, e);
-            } catch (InstantiationException e) {
-                String errorMsg = "Error instantiating the MessagePreprocessor implementation.";
-                logger.error(errorMsg, e);
-                throw new IllegalArgumentException(errorMsg, e);
-            } catch (IllegalAccessException e) {
-                String errorMsg = "Error instantiating the MessagePreprocessor implementation.";
-                logger.error(errorMsg, e);
-                throw new IllegalArgumentException(errorMsg, e);
-            }
-        }
-
-        if (messagePreProcessor == null) {
-            // MessagePreprocessor is not set. So read the topic from the config.
-            topic = context.getString(com.asiainfo.kafkasink.Constants.TOPIC, com.asiainfo.kafkasink.Constants.DEFAULT_TOPIC);
-            if (topic.equals(com.asiainfo.kafkasink.Constants.DEFAULT_TOPIC)) {
-                logger.warn("The Properties 'metadata.extractor' or 'topic' is not set. Using the default topic name" +
-                        com.asiainfo.kafkasink.Constants.DEFAULT_TOPIC);
-            } else {
-                logger.info("Using the static topic: " + topic);
-            }
-        }
+    if (logger.isDebugEnabled()) {
+      logger.debug(KafkaSinkConstants.AVRO_EVENT + " set to: {}", useAvroEventFormat);
     }
+
+    kafkaFutures = new LinkedList<Future<RecordMetadata>>();
+
+    String bootStrapServers = context.getString(BOOTSTRAP_SERVERS_CONFIG);
+    if (bootStrapServers == null || bootStrapServers.isEmpty()) {
+      throw new ConfigurationException("Bootstrap Servers must be specified");
+    }
+
+    setProducerProps(context, bootStrapServers);
+
+    if (logger.isDebugEnabled() && LogPrivacyUtil.allowLogPrintConfig()) {
+      logger.debug("Kafka producer properties: {}", kafkaProps);
+    }
+
+    if (counter == null) {
+      counter = new KafkaSinkCounter(getName());
+    }
+
+    String preprocessorClassName = context.getString(com.asiainfo.kafkasink.Constants.PREPROCESSOR);
+    if (preprocessorClassName != null) {
+      try {
+        Class preprocessorClazz = Class.forName(preprocessorClassName.trim());
+        Object preprocessorObj = preprocessorClazz.newInstance();
+        if (preprocessorObj instanceof MessagePreprocessor) {
+          messagePreProcessor = (MessagePreprocessor) preprocessorObj;
+        } else {
+          String errorMsg = "Provided class for MessagePreprocessor does not implement " +
+                  "'com.thilinamb.flume.sink.MessagePreprocessor'";
+          logger.error(errorMsg);
+          throw new IllegalArgumentException(errorMsg);
+        }
+      } catch (ClassNotFoundException e) {
+        String errorMsg = "Error instantiating the MessagePreprocessor implementation.";
+        logger.error(errorMsg, e);
+        throw new IllegalArgumentException(errorMsg, e);
+      } catch (InstantiationException e) {
+        String errorMsg = "Error instantiating the MessagePreprocessor implementation.";
+        logger.error(errorMsg, e);
+        throw new IllegalArgumentException(errorMsg, e);
+      } catch (IllegalAccessException e) {
+        String errorMsg = "Error instantiating the MessagePreprocessor implementation.";
+        logger.error(errorMsg, e);
+        throw new IllegalArgumentException(errorMsg, e);
+      }
+    }
+
+    if (messagePreProcessor == null) {
+      // MessagePreprocessor is not set. So read the topic from the config.
+      topic = context.getString(com.asiainfo.kafkasink.Constants.TOPIC, com.asiainfo.kafkasink.Constants.DEFAULT_TOPIC);
+      if (topic.equals(com.asiainfo.kafkasink.Constants.DEFAULT_TOPIC)) {
+        logger.warn("The Properties 'metadata.extractor' or 'topic' is not set. Using the default topic name" +
+                com.asiainfo.kafkasink.Constants.DEFAULT_TOPIC);
+      } else {
+        logger.info("Using the static topic: " + topic);
+      }
+    }
+  }
+
+  private void translateOldProps(Context ctx) {
+
+    if (!(ctx.containsKey(TOPIC_CONFIG))) {
+      ctx.put(TOPIC_CONFIG, ctx.getString("topic"));
+      logger.warn("{} is deprecated. Please use the parameter {}", "topic", TOPIC_CONFIG);
+    }
+
+    //Broker List
+    // If there is no value we need to check and set the old param and log a warning message
+    if (!(ctx.containsKey(BOOTSTRAP_SERVERS_CONFIG))) {
+      String brokerList = ctx.getString(BROKER_LIST_FLUME_KEY);
+      if (brokerList == null || brokerList.isEmpty()) {
+        throw new ConfigurationException("Bootstrap Servers must be specified");
+      } else {
+        ctx.put(BOOTSTRAP_SERVERS_CONFIG, brokerList);
+        logger.warn("{} is deprecated. Please use the parameter {}",
+                    BROKER_LIST_FLUME_KEY, BOOTSTRAP_SERVERS_CONFIG);
+      }
+    }
+
+    //batch Size
+    if (!(ctx.containsKey(BATCH_SIZE))) {
+      String oldBatchSize = ctx.getString(OLD_BATCH_SIZE);
+      if ( oldBatchSize != null  && !oldBatchSize.isEmpty())  {
+        ctx.put(BATCH_SIZE, oldBatchSize);
+        logger.warn("{} is deprecated. Please use the parameter {}", OLD_BATCH_SIZE, BATCH_SIZE);
+      }
+    }
+
+    // Acks
+    if (!(ctx.containsKey(KAFKA_PRODUCER_PREFIX + ProducerConfig.ACKS_CONFIG))) {
+      String requiredKey = ctx.getString(
+              KafkaSinkConstants.REQUIRED_ACKS_FLUME_KEY);
+      if (!(requiredKey == null) && !(requiredKey.isEmpty())) {
+        ctx.put(KAFKA_PRODUCER_PREFIX + ProducerConfig.ACKS_CONFIG, requiredKey);
+        logger.warn("{} is deprecated. Please use the parameter {}", REQUIRED_ACKS_FLUME_KEY,
+                KAFKA_PRODUCER_PREFIX + ProducerConfig.ACKS_CONFIG);
+      }
+    }
+
+    if (ctx.containsKey(KEY_SERIALIZER_KEY )) {
+      logger.warn("{} is deprecated. Flume now uses the latest Kafka producer which implements " +
+          "a different interface for serializers. Please use the parameter {}",
+          KEY_SERIALIZER_KEY,KAFKA_PRODUCER_PREFIX + ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG);
+    }
+
+    if (ctx.containsKey(MESSAGE_SERIALIZER_KEY)) {
+      logger.warn("{} is deprecated. Flume now uses the latest Kafka producer which implements " +
+                  "a different interface for serializers. Please use the parameter {}",
+                  MESSAGE_SERIALIZER_KEY,
+                  KAFKA_PRODUCER_PREFIX + ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG);
+    }
+  }
+
+  private void setProducerProps(Context context, String bootStrapServers) {
+    kafkaProps.put(ProducerConfig.ACKS_CONFIG, DEFAULT_ACKS);
+    //Defaults overridden based on config
+    kafkaProps.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, DEFAULT_KEY_SERIALIZER);
+    kafkaProps.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, DEFAULT_VALUE_SERIAIZER);
+    kafkaProps.putAll(context.getSubProperties(KAFKA_PRODUCER_PREFIX));
+    kafkaProps.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, bootStrapServers);
+  }
+
+  protected Properties getKafkaProps() {
+    return kafkaProps;
+  }
+
+  private byte[] serializeEvent(Event event, boolean useAvroEventFormat) throws IOException {
+    byte[] bytes;
+    if (useAvroEventFormat) {
+      if (!tempOutStream.isPresent()) {
+        tempOutStream = Optional.of(new ByteArrayOutputStream());
+      }
+      if (!writer.isPresent()) {
+        writer = Optional.of(new SpecificDatumWriter<AvroFlumeEvent>(AvroFlumeEvent.class));
+      }
+      tempOutStream.get().reset();
+      AvroFlumeEvent e = new AvroFlumeEvent(toCharSeqMap(event.getHeaders()),
+                                            ByteBuffer.wrap(event.getBody()));
+      encoder = EncoderFactory.get().directBinaryEncoder(tempOutStream.get(), encoder);
+      writer.get().write(e, encoder);
+      encoder.flush();
+      bytes = tempOutStream.get().toByteArray();
+    } else {
+      bytes = event.getBody();
+    }
+    return bytes;
+  }
+
+  private static Map<CharSequence, CharSequence> toCharSeqMap(Map<String, String> stringMap) {
+    Map<CharSequence, CharSequence> charSeqMap = new HashMap<CharSequence, CharSequence>();
+    for (Map.Entry<String, String> entry : stringMap.entrySet()) {
+      charSeqMap.put(entry.getKey(), entry.getValue());
+    }
+    return charSeqMap;
+  }
+
 }
+
+class SinkCallback implements Callback {
+  private static final Logger logger = LoggerFactory.getLogger(SinkCallback.class);
+  private long startTime;
+
+  public SinkCallback(long startTime) {
+    this.startTime = startTime;
+  }
+
+  public void onCompletion(RecordMetadata metadata, Exception exception) {
+    if (exception != null) {
+      logger.debug("Error sending message to Kafka {} ", exception.getMessage());
+    }
+
+    if (logger.isDebugEnabled()) {
+      long eventElapsedTime = System.currentTimeMillis() - startTime;
+      logger.debug("Acked message partition:{} ofset:{}",  metadata.partition(), metadata.offset());
+      logger.debug("Elapsed time for send: {}", eventElapsedTime);
+    }
+  }
+}
+

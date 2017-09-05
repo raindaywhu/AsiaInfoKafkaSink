@@ -42,7 +42,7 @@
       <artifactId>com.asiainfo.util</artifactId>
       <version>1.0</version>
       <scope>system</scope>
-      <systemPath>/Users/galvin/Desktop/flume-sink数据分割自定义开发-西安最终版/src/main/resources/libs/com.asiainfo.util.jar</systemPath>
+      <systemPath>/Users/rainday/code/raindaywhu/AsiaInfoKafkaSink/src/main/resources/libs/com.asiainfo.util.jar</systemPath>
     </dependency>
   </dependencies>
 </project>
