@@ -65,14 +65,21 @@ public class YunNan3GMessagePreprocessor implements MessagePreprocessor {
     public String transformMessage(String messageBody) {
         StringBuilder sb=new StringBuilder();
         if( StringUtils.isNotEmpty(messageBody)){
-            String[] msg = messageBody.split(",");
+            String[] msg = messageBody.split(",",11);
             //logger.info("Length:"+msg.length);
-            if (msg.length == 11){
-                sb.append("||||||").append(msg[2]).append("|").append(msg[3]).append("|||").append(msg[0]).append("|||||||||||||||||||||||").append(msg[7]).append("|").append(msg[8]).append("||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||");
+            if (msg.length >= 11){
+                if (msg[8].length() ==5 && msg[10].length() >1){
+                    sb.append("31||||||").append(msg[2]).append("|").append(msg[3]).append("|||").append(msg[0]).append("|||||||||||||||||||||||").append(msg[8]).append("|").append(msg[10]).append("||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||");
+                } else
+                {
+                    sb.append("31||||||").append(msg[2]).append("|").append(msg[3]).append("|||").append(msg[0]).append("|||||||||||||||||||||||").append(msg[7]).append("|").append(msg[9]).append("||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||");
+                }
+                //sb.append("||||||").append(msg[2]).append("|").append(msg[3]).append("|||").append(msg[0]).append("|||||||||||||||||||||||").append(msg[7]).append("|").append(msg[8]).append("||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||");
                 return sb.toString();
             }
             else{
-                return messageBody;
+                sb.append("31:FIELD_ERR").append(messageBody);
+                return sb.toString();
             }
         }
         else {
