@@ -65,15 +65,15 @@ public class YunNan2GMessagePreprocessor implements MessagePreprocessor {
     public String transformMessage(String messageBody) {
         StringBuilder sb=new StringBuilder();
         if( StringUtils.isNotEmpty(messageBody)){
-            String[] msg = messageBody.split(",",10);
+            String[] msg = messageBody.split(",",-1);
             //logger.info("Length:"+msg.length);
-            if (msg.length >= 9){
+            if (msg.length >= 10){
                 sb.append("11||||||").append(msg[2]).append("|").append(msg[3]).append("|").append(msg[9]).append("||").append(msg[0]).append("|||||||||||||||||||||||").append(msg[7]).append("|").append(msg[8]).append("||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||");
                 //sb.append("||||||").append(msg[2]).append("|").append(msg[3]).append("|").append(msg[9]).append("||").append(msg[0]).append("|||||||||||||||||||||||").append(msg[5]).append("|").append(msg[6]).append("||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||");
                 return sb.toString();
             }
             else{
-                sb.append("11:FIELD_ERR").append(messageBody);
+                logger.warn("dropped error message " + messageBody);
                 return sb.toString();
             }
         }

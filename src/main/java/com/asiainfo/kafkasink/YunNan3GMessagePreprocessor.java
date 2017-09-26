@@ -65,7 +65,7 @@ public class YunNan3GMessagePreprocessor implements MessagePreprocessor {
     public String transformMessage(String messageBody) {
         StringBuilder sb=new StringBuilder();
         if( StringUtils.isNotEmpty(messageBody)){
-            String[] msg = messageBody.split(",",11);
+            String[] msg = messageBody.split(",",-1);
             //logger.info("Length:"+msg.length);
             if (msg.length >= 11){
                 if (msg[8].length() ==5 && msg[10].length() >1){
@@ -78,7 +78,8 @@ public class YunNan3GMessagePreprocessor implements MessagePreprocessor {
                 return sb.toString();
             }
             else{
-                sb.append("31:FIELD_ERR").append(messageBody);
+                //sb.append("31:FIELD_ERR").append(messageBody);
+                logger.warn("dropped error message " + messageBody);
                 return sb.toString();
             }
         }
