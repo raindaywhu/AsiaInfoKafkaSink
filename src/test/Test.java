@@ -19,6 +19,7 @@ public class Test {
         String result31=new YunNan3GMessagePreprocessor().transformMessage(posi3g);
         String result32=new YunNan3GCallPreprocessor().transformMessage(call3g);
         String result33=new YunNan3GSmsPreprocessor().transformMessage(sms3g);
+
         System.out.println(result21);
         System.out.println(result22);
         System.out.println(result23);
