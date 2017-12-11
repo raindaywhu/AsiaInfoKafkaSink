@@ -27,7 +27,7 @@ import org.slf4j.LoggerFactory;
 /**
  * This is an example of a <code>MessagePreprocessor</code> implementation.
  */
-public class YunNan2GMessagePreprocessor implements MessagePreprocessor {
+public class YunNan2GSmsPreprocessor implements MessagePreprocessor {
     private static final Logger logger = LoggerFactory.getLogger(KafkaSink.class);
 
     /**
@@ -59,6 +59,8 @@ public class YunNan2GMessagePreprocessor implements MessagePreprocessor {
     }
 
     /**
+     * 2G短信信令（ga_sm_bdr）原格式：start_time,sms_type,calling,imsi,imei,tmsi,start_lac,start_ci,called
+     * 对应与4G S1-MME的
      * Trying to prepend each message with the timestamp.
      * @return modified message of the form: timestamp + ":" + original message body
      */
@@ -68,31 +70,26 @@ public class YunNan2GMessagePreprocessor implements MessagePreprocessor {
         if (StringUtils.isNotEmpty(messageBody)) {
             String[] msg = messageBody.split(",", -1);
             //logger.info("Length:"+msg.length);
-            if (msg.length >= 10 && msg[2].length() > 10) {
-                String mmtype=msg[1];
-                String PROCEDURE_TYPE="";
-                if("0".equals(mmtype)){
-                    PROCEDURE_TYPE="2007";
-                }else if("1".equals(mmtype)){
-                    PROCEDURE_TYPE="2008";
-                }else if("2".equals(mmtype)){
-                    PROCEDURE_TYPE="2005";
-                }else if("3".equals(mmtype)){
-                    PROCEDURE_TYPE="2006";
+            if (msg.length >= 9 && msg[3].length() > 10) {
+                String PROCEDURE_TYPE="";//").append().append("
+                if("0".equals(msg[1])){
+                    PROCEDURE_TYPE="2003";
+                }else if("1".equals(msg[1])){
+                    PROCEDURE_TYPE="2004";
                 }
-                String called="";
-                String imsi=msg[2];
-                String imei=msg[3];
-                String msisdn=msg[9];
+                String called=msg[8];
+                String imsi=msg[3];
+                String imei=msg[4];
+                String msisdn=msg[2];
                 String procedure_start_time=msg[0];
-                String tmsi=msg[4];
-                String lac=msg[5];
-                String cell=msg[6];
-                String end_lac=msg[7];
-                String end_ci=msg[8];
+                String tmsi=msg[5];
+                String lac=msg[6];
+                String cell=msg[7];
+                String end_lac="";
+                String end_ci="";
 
                 //0-10  called,imsi,imei,MSISDN,PROCEDURE_TYPE,PROCEDURE_START_TIME
-                sb.append("21||||").append(called).append("||").append(imsi).append("|").append(imei).append("|").append(msisdn).append("|").append(PROCEDURE_TYPE).append("|").append(procedure_start_time);
+                sb.append("23||||").append(called).append("||").append(imsi).append("|").append(imei).append("|").append(msisdn).append("|").append(PROCEDURE_TYPE).append("|").append(procedure_start_time);
                 //11-32,TMSI
                 sb.append("||||||||||||||||").append(tmsi).append("|||||||");
                 //LAC,CI,end_lac,end_ci
