@@ -27,13 +27,14 @@ import org.slf4j.LoggerFactory;
 /**
  * This is an example of a <code>MessagePreprocessor</code> implementation.
  */
-public class YunNan2GMessagePreprocessor implements MessagePreprocessor {
+public class YunNan3GCallPreprocessor implements MessagePreprocessor {
     private static final Logger logger = LoggerFactory.getLogger(KafkaSink.class);
 
     /**
      * extract the hour of the time stamp as the key. So the data is partitioned
      * per hour.
-     * @param event This is the Flume event that will be sent to Kafka
+     *
+     * @param event   This is the Flume event that will be sent to Kafka
      * @param context The Flume runtime context.
      * @return Hour of the timestamp
      */
@@ -46,7 +47,8 @@ public class YunNan2GMessagePreprocessor implements MessagePreprocessor {
 
     /**
      * A custom property is read from the Flume config.
-     * @param event This is the Flume event that will be sent to Kafka
+     *
+     * @param event   This is the Flume event that will be sent to Kafka
      * @param context The Flume runtime context.
      * @return topic provided as a custom property
      */
@@ -60,6 +62,7 @@ public class YunNan2GMessagePreprocessor implements MessagePreprocessor {
 
     /**
      * Trying to prepend each message with the timestamp.
+     *
      * @return modified message of the form: timestamp + ":" + original message body
      */
     @Override
@@ -68,31 +71,27 @@ public class YunNan2GMessagePreprocessor implements MessagePreprocessor {
         if (StringUtils.isNotEmpty(messageBody)) {
             String[] msg = messageBody.split(",", -1);
             //logger.info("Length:"+msg.length);
-            if (msg.length >= 10 && msg[2].length() > 10) {
-                String mmtype=msg[1];
-                String PROCEDURE_TYPE="";
-                if("0".equals(mmtype)){
-                    PROCEDURE_TYPE="2007";
-                }else if("1".equals(mmtype)){
-                    PROCEDURE_TYPE="2008";
-                }else if("2".equals(mmtype)){
-                    PROCEDURE_TYPE="2005";
-                }else if("3".equals(mmtype)){
-                    PROCEDURE_TYPE="2006";
+            if (msg.length >= 11 && msg[4].length() > 10) {
+                String mmtype = msg[1];
+                String PROCEDURE_TYPE = "";//").append().append("
+                if ("0".equals(mmtype)) {
+                    PROCEDURE_TYPE = "2001";
+                } else if ("1".equals(mmtype)) {
+                    PROCEDURE_TYPE = "2002";
                 }
-                String called="";
-                String imsi=msg[2];
-                String imei=msg[3];
-                String msisdn=msg[9];
-                String procedure_start_time=msg[0];
-                String tmsi=msg[4];
-                String lac=msg[5];
-                String cell=msg[6];
-                String end_lac=msg[7];
-                String end_ci=msg[8];
+                String called = msg[3];
+                String imsi = msg[4];
+                String imei = msg[5];
+                String msisdn = msg[2];
+                String procedure_start_time = msg[0];
+                String tmsi = msg[6];
+                String lac = msg[7];
+                String cell = msg[8];
+                String end_lac = msg[9];
+                String end_ci = msg[10];
 
                 //0-10  called,imsi,imei,MSISDN,PROCEDURE_TYPE,PROCEDURE_START_TIME
-                sb.append("21||||").append(called).append("||").append(imsi).append("|").append(imei).append("|").append(msisdn).append("|").append(PROCEDURE_TYPE).append("|").append(procedure_start_time);
+                sb.append("32||||").append(called).append("||").append(imsi).append("|").append(imei).append("|").append(msisdn).append("|").append(PROCEDURE_TYPE).append("|").append(procedure_start_time);
                 //11-32,TMSI
                 sb.append("||||||||||||||||").append(tmsi).append("|||||||");
                 //LAC,CI,end_lac,end_ci
@@ -106,4 +105,5 @@ public class YunNan2GMessagePreprocessor implements MessagePreprocessor {
             return messageBody;
         }
     }
+
 }
