@@ -81,7 +81,7 @@ public class YunNan2GSmsPreprocessor implements MessagePreprocessor {
                 String imsi=msg[3];
                 String imei=msg[4];
                 String msisdn=msg[2];
-                String procedure_start_time=msg[0];
+                long procedure_start_time=new DateFormatUtils().dateString2Timestamp(msg[0]);
                 String tmsi=msg[5];
                 String lac=msg[6];
                 String cell=msg[7];

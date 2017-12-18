@@ -42,7 +42,7 @@
       <artifactId>com.asiainfo.util</artifactId>
       <version>1.0</version>
       <scope>system</scope>
-      <systemPath>/Users/rainday/code/raindaywhu/AsiaInfoKafkaSink/src/main/resources/libs/com.asiainfo.util.jar</systemPath>
+      <systemPath>D:\aiGitLab\AsiaInfoKafkaSink_yyx/src/main/resources/libs/com.asiainfo.util.jar</systemPath>
     </dependency>
   </dependencies>
 </project>

@@ -24,6 +24,8 @@ import org.apache.flume.Event;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.sql.Timestamp;
+
 /**
  * 2G呼叫信令（ga_cc_bdr）转换为4G S1-MME格式
  * This is an example of a <code>MessagePreprocessor</code> implementation.
@@ -83,7 +85,7 @@ public class YunNan2GCallPreprocessor implements MessagePreprocessor {
                 String imsi=msg[4];
                 String imei=msg[5];
                 String msisdn=msg[2];
-                String procedure_start_time=msg[0];
+                long procedure_start_time=new DateFormatUtils().dateString2Timestamp(msg[0]);
                 String tmsi=msg[6];
                 String lac=msg[7];
                 String cell=msg[8];
