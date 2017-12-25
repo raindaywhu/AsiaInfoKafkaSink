@@ -28,7 +28,7 @@ import org.slf4j.LoggerFactory;
  * This is an example of a <code>MessagePreprocessor</code> implementation.
  */
 public class YunNan3GSmsPreprocessor implements MessagePreprocessor {
-    private static final Logger logger = LoggerFactory.getLogger(KafkaSink.class);
+    private static final Logger logger = LoggerFactory.getLogger(YunNan3GSmsPreprocessor.class);
 
     /**
      * extract the hour of the time stamp as the key. So the data is partitioned
@@ -64,11 +64,13 @@ public class YunNan3GSmsPreprocessor implements MessagePreprocessor {
      */
     @Override
     public String transformMessage(String messageBody) {
+        int fieldLength=9;
         StringBuilder sb = new StringBuilder();
         if (StringUtils.isNotEmpty(messageBody)) {
             String[] msg = messageBody.split(",", -1);
+            String imsi = msg[4];
             //logger.info("Length:"+msg.length);
-            if (msg.length >= 9 && msg[4].length() > 10) {
+            if (msg.length >= fieldLength && imsi.length() > 10) {
                 String mmtype = msg[1];
                 String PROCEDURE_TYPE = "";//").append().append("
                 if ("0".equals(mmtype)) {
@@ -77,10 +79,9 @@ public class YunNan3GSmsPreprocessor implements MessagePreprocessor {
                     PROCEDURE_TYPE = "2004";
                 }
                 String called = msg[3];
-                String imsi = msg[4];
                 String imei = msg[5];
                 String msisdn = msg[2];
-                long procedure_start_time=new DateFormatUtils().dateString2Timestamp(msg[0]);
+                long procedure_start_time=DateFormatUtils.dateString2Timestamp(msg[0]).getTime();
                 String tmsi = msg[6];
                 String lac = msg[7];
                 String cell = msg[8];
