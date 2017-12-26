@@ -88,8 +88,8 @@ public class YunNan3GMessagePreprocessor implements MessagePreprocessor {
                 long procedure_start_time=DateFormatUtils.dateString2Timestamp(msg[0]).getTime();
                 String tmsi=msg[4];
                 String lac=msg[7];
-                String cell=msg[8];
-                String end_lac=msg[9];
+                String cell=msg[9];
+                String end_lac=msg[8];
                 String end_ci=msg[10];
 
                 //0-10  called,imsi,imei,MSISDN,PROCEDURE_TYPE,PROCEDURE_START_TIME
