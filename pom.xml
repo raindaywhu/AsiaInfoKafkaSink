@@ -6,7 +6,7 @@
 
     <groupId>com.asiainfo.stream</groupId>
     <artifactId>KafkaSinkByAsiainfo</artifactId>
-    <version>1.0</version>
+    <version>1.4-timestamp</version>
     <dependencies>
 
         <dependency>
